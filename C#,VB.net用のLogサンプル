@@ -1,0 +1,204 @@
+１．log4net.dll　をダウンロードする。
+
+２．Log4net.Config.xml　ファイルを新規作成する。
+　　
+  <?xml version="1.0" encoding="utf-8" ?>
+    <configuration>
+      <log4net>
+        <!-- 通常ログ：分割ファイル出力 -->
+        <appender name="InfoLogAppender" type="log4net.Appender.RollingFileAppender">
+          <!-- ファイル名は日付ごと -->
+          <param name="File" value="NBCLogs\\Info_" />
+          <param name="DatePattern" value='yyyyMMdd".log"' />
+          <param name="RollingStyle" value="date" />
+          <param name="StaticLogFileName" value="false" />
+
+          <AppendToFile value="true" />
+          <preserveLogFileNameExtension value="true"/>
+          <lockingModel type="log4net.Appender.FileAppender+MinimalLock"/>
+
+          <filter type="log4net.Filter.LevelRangeFilter">
+            <param name="LevelMax" value="WARN" />
+            <param name="LevelMin" value="INFO" />
+          </filter>
+
+          <param name="MaximumFileSize" value="10MB" />
+          <!-- 最大保存ファイル数 (古い順に削除) -->
+          <param name="MaxSizeRollBackups" value="10" />
+
+          <layout type="log4net.Layout.PatternLayout">
+            <ConversionPattern value="%date [%thread] [%-5level] [UserId:%property{uid}] [ProcessId:%property{pid}] %logger - %message%n" />
+          </layout>
+
+          <!-- 文字コード：UTF8 -->
+          <Encoding value="UTF-8"/>
+        </appender>
+
+        <!-- エラーログ：分割ファイル出力 -->
+        <appender name="ErrorLogAppender" type="log4net.Appender.RollingFileAppender">
+          <!-- ファイル名は日付ごと -->
+          <param name="File" value="NBCLogs\\Error_" />
+          <param name="DatePattern" value='yyyyMMdd".log"' />
+          <param name="RollingStyle" value="date" />
+          <param name="StaticLogFileName" value="false" />
+
+          <param name="AppendToFile" value="true" />
+          <preserveLogFileNameExtension value="true"/>
+          <lockingModel type="log4net.Appender.FileAppender+MinimalLock"/>
+
+          <filter type="log4net.Filter.LevelRangeFilter">
+            <param name="LevelMax" value="FATAL" />
+            <param name="LevelMin" value="ERROR" />
+          </filter>
+
+          <param name="MaximumFileSize" value="10MB" />
+          <!-- 最大保存ファイル数 (古い順に削除) -->
+          <param name="MaxSizeRollBackups" value="10" />
+
+          <layout type="log4net.Layout.PatternLayout">
+            <ConversionPattern value="%date [%thread] [%-5level] [UserId:%property{uid}] [ProcessId:%property{pid}] %logger - %message%n" />
+          </layout>
+
+          <!-- 文字コード：UTF8 -->
+          <Encoding value="UTF-8"/>
+        </appender>
+
+        <!-- デバッグ用：分割ファイル出力 -->
+        <appender name="DebugLogAppender" type="log4net.Appender.RollingFileAppender">
+
+          <!-- ファイル名は日付ごと -->
+          <param name="File" value="NBCLogs\\Debug_" />
+          <param name="DatePattern" value='yyyyMMdd".log"' />
+          <param name="RollingStyle" value="date" />
+          <param name="StaticLogFileName" value="false" />
+
+          <param name="AppendToFile" value="true" />
+          <preserveLogFileNameExtension value="true"/>
+          <lockingModel type="log4net.Appender.FileAppender+MinimalLock"/>
+
+          <filter type="log4net.Filter.LevelRangeFilter">
+            <param name="LevelMin" value="DEBUG" />
+          </filter>
+
+          <param name="MaximumFileSize" value="10MB" />
+          <!-- 最大保存ファイル数 (古い順に削除) -->
+          <param name="MaxSizeRollBackups" value="10" />
+
+          <layout type="log4net.Layout.PatternLayout">
+            <ConversionPattern value="%date [%thread] [%-5level] [UserId:%property{uid}] [ProcessId:%property{pid}] %logger - %message%n" />
+          </layout>
+
+          <!-- 文字コード：UTF8 -->
+          <Encoding value="UTF-8"/>
+        </appender>
+
+        <!-- コンソール出力用 (VS 上 [出力] ウインドウへの出力) -->
+        <appender name="ConsoleAppender" type="log4net.Appender.ConsoleAppender">
+          <!-- 出力文字列のフォーマット -->
+          <layout type="log4net.Layout.PatternLayout">
+            <param name="ConversionPattern" value="%date [%thread] %-5level [UserId:%property{uid}] [ProcessId:%property{pid}] >> %message%newline" />
+          </layout>
+
+          <!-- 文字コード：UTF8 -->
+          <Encoding value="UTF-8"/>
+        </appender>
+
+        <root>
+          <!-- Debug以上のログを記録 -->
+          <level value="DEBUG" />
+
+          <!-- 使用する Appender -->
+          <appender-ref ref="InfoLogAppender" />
+          <appender-ref ref="ErrorLogAppender" />
+          <appender-ref ref="DebugLogAppender" />
+          <appender-ref ref="ConsoleAppender" />
+        </root>
+
+      </log4net>
+    </configuration>
+
+３．AppLogger.vb 共通用のIFクラスを新規作成する。
+
+    Public Class AppLogger
+        ' Log4netオブジェクトの宣言
+        Private _log As log4net.ILog
+
+        ' カスタマイズオブジェクトの宣言
+        Private Shared _appLog As AppLogger = Nothing
+
+        ' コンストラクタ
+        Private Sub New(ByVal type As Type, ByVal userId As String)
+            'VB:System.Reflection.MethodBase.GetCurrentMethod.DeclaringType
+            'C#:System.Reflection.MethodBase.GetCurrentMethod().DeclaringType
+            _log = log4net.LogManager.GetLogger(type)
+
+            ' 現在のユーザIDを設定する
+            log4net.GlobalContext.Properties.Item("uid") = If(String.IsNullOrEmpty(userId), "", userId)
+
+            ' 現在のプロセスを設定する
+            log4net.GlobalContext.Properties.Item("pid") = System.Diagnostics.Process.GetCurrentProcess().Id
+        End Sub
+
+        ' カスタマイズオブジェクトを取得
+        Public Shared Function GetAppLogger(ByVal type As Type, ByVal userId As String) As AppLogger
+            _appLog = New AppLogger(type, userId)
+            Return _appLog
+        End Function
+
+        ' メソッドの開始ログ
+        Public Sub MethodStart()
+            _log.Info("MethodStart:" + GetMethodName())
+        End Sub
+
+        ' メソッドの終了ログ
+        Public Sub MethodEnd()
+            _log.Info("MethodEnd:" + GetMethodName())
+        End Sub
+
+        ' Debugログの出力
+        Public Sub Debug(ByVal msg As String)
+            _log.Debug(msg)
+        End Sub
+
+        ' Infoログの出力
+        Public Sub Info(ByVal msg As String)
+            _log.Info(msg)
+        End Sub
+
+        ' Infoログの出力
+        Public Sub Warn(ByVal msg As String)
+            _log.Warn(msg)
+        End Sub
+
+        ' Errorログの出力
+        Public Sub Err(ByVal msg As String)
+            _log.Error(msg)
+        End Sub
+
+        ' Errorログの出力
+        Public Sub Err(ByVal msg As String, ByVal ex As Exception)
+            _log.Error(msg, ex)
+        End Sub
+
+        ' Errorログの出力
+        Public Sub Fatal(ByVal msg As String, ByVal ex As Exception)
+            _log.Fatal(msg, ex)
+        End Sub
+
+        ' 呼び出し元のメソッド名を取得
+        Private Function GetMethodName() As String
+            Dim st As New StackTrace(False)
+            ' ラッパークラスのメソッドを呼んでいるメソッド名
+            Try
+                Dim sf As StackFrame = st.GetFrame(2)
+                Return sf.GetMethod.Name
+            Catch ex As Exception
+                'Ignore
+            End Try
+
+            Return "不明"
+        End Function
+    End Class
+
+
+（終）
