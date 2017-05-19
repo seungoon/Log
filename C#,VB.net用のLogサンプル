@@ -1,7 +1,7 @@
 １．log4net.dll　をダウンロードする。
 
 ２．Log4net.Config.xml　ファイルを新規作成する。
-　　
+
   <?xml version="1.0" encoding="utf-8" ?>
     <configuration>
       <log4net>
