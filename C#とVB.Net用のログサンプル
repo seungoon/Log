@@ -1,0 +1,719 @@
+１．ログ術力用のメインクラス(LogUtility)を作成する。
+
+    public static class LogUtility
+    {
+        public enum Severity
+        {
+            Debug,
+            Info,
+            Warn,
+            Error,
+            Exception
+        }
+
+        private static ExeConfigurationFileMap map = new ExeConfigurationFileMap();
+        private static Configuration _configFile = null;
+        private static DirectoryInfo _logDir = new DirectoryInfo(Directory.GetCurrentDirectory());
+        private static string _prefix;
+        private static string _dateFormat;
+        private static string _suffix;
+        private static string _extension;
+        private static Severity _logLevel = Severity.Debug;
+        private static readonly Queue<XElement> _logEntryQueue = new Queue<XElement>();
+        private static Task _backgroundTask;
+        private static readonly object _backgroundTaskSyncRoot = new object();
+        private static readonly object _logFileSyncRoot = new object();
+        private static string _textSeparator = " ";
+        private static readonly String CONST_EXCEPTION = "Exception";
+        private static readonly String CONST_COMENT_EXCEPTION_VALUE = "詳細：";
+
+        public static string LogDir
+        {
+            get
+            {
+                return _logDir.FullName;
+            }
+        }
+
+        public static string Prefix
+        {
+            get
+            {
+                return _prefix ?? string.Empty;
+            }
+            set
+            {
+                _prefix = value;
+            }
+        }
+
+        public static string Suffix
+        {
+            get
+            {
+                return _suffix ?? string.Empty;
+            }
+            set
+            {
+                _suffix = value;
+            }
+        }
+
+        public static string Extension
+        {
+            get
+            {
+                return _extension ?? "log";
+            }
+            set
+            {
+                _extension = value;
+            }
+        }
+
+        public static string DateFormat
+        {
+            get
+            {
+                return _dateFormat ?? "yyyy_MM_dd";
+            }
+            set
+            {
+                _dateFormat = value;
+            }
+        }
+
+        public static Severity LogLevel
+        {
+            get
+            {
+                return _logLevel;
+            }
+            set
+            {
+                _logLevel = value;
+            }
+        }
+
+        public static bool StartExplicitly
+        {
+            get;
+            set;
+        }
+
+        public static bool WriteText
+        {
+            get;
+            set;
+        }
+
+        public static string TextSeparator
+        {
+            get
+            {
+                return _textSeparator;
+            }
+            set
+            {
+                _textSeparator = value ?? string.Empty;
+            }
+        }
+
+        public static string FileName
+        {
+            get
+            {
+                return GetFileName(DateTime.Now);
+            }
+        }
+
+        public static bool StopEnqueingNewEntries
+        {
+            get;
+            private set;
+        }
+
+        public static bool StopLoggingRequested
+        {
+            get;
+            private set;
+        }
+
+        public static Exception LastExceptionInBackgroundTask
+        {
+            get;
+            private set;
+        }
+
+        public static int NumberOfLogEntriesWaitingToBeWrittenToFile
+        {
+            get
+            {
+                return _logEntryQueue.Count;
+            }
+        }
+
+        public static bool LoggingStarted
+        {
+            get
+            {
+                return _backgroundTask != null;
+            }
+        }
+
+        static LogUtility()
+        {
+            AppDomain.CurrentDomain.ProcessExit += CurrentDomainProcessExit;
+        }
+
+        static void CurrentDomainProcessExit(object sender, EventArgs e)
+        {
+            StopLogging();
+        }
+
+        public static Exception SetLogFile(string logDir = null, string prefix = null, string suffix = null, string extension = null, string dateFormat = null, Severity? logLevel = null, bool? startExplicitly = null, bool? writeText = true, string textSeparator = null)
+        {
+            Exception result = null;
+            try
+            {
+                map.ExeConfigFilename = System.Reflection.Assembly.GetExecutingAssembly().Location + ".config";
+                _configFile = ConfigurationManager.OpenMappedExeConfiguration(map, ConfigurationUserLevel.None);
+
+                if (writeText != null)
+                    WriteText = writeText.Value;
+                if (textSeparator != null)
+                    TextSeparator = textSeparator;
+                if (logLevel == null)
+                    LogLevel = (_configFile == null ? logLevel.Value : (Severity)Enum.Parse(typeof(Severity), _configFile.AppSettings.Settings["LOG_LEVEL"].Value));
+                else
+                    LogLevel = logLevel.Value;
+                if (extension != null)
+                    Extension = extension;
+                if (suffix != null)
+                    Suffix = suffix;
+                if (dateFormat != null)
+                    DateFormat = dateFormat;
+                if (prefix != null)
+                    Prefix = prefix;
+                if (startExplicitly != null)
+                    StartExplicitly = startExplicitly.Value;
+                if (logDir == null)
+                {
+                    var configKey = _configFile.AppSettings.Settings["LOG_FILE_PATH"];
+
+                    if (configKey == null || String.IsNullOrEmpty(configKey.Value))
+                        result = SetLogDir(Path.Combine(Directory.GetCurrentDirectory()), true);
+                    else
+                        // 完全PATH設定の場合
+                        //result = SetLogDir((_configFile.AppSettings.Settings["LOG_FILE_PATH"].Value), true);
+
+                        // 相対PATH設定の場合
+                        result = SetLogDir(Path.Combine(Directory.GetCurrentDirectory(), _configFile.AppSettings.Settings["LOG_FILE_PATH"].Value), true);
+                }
+                else
+                {
+                    result = SetLogDir(logDir, true);
+                }
+            }
+            catch (Exception ex)
+            {
+                result = ex;
+            }
+            return result;
+        }
+
+        public static Exception SetLogDir(string logDir, bool createIfNotExisting = false)
+        {
+            if (string.IsNullOrEmpty(logDir))
+                logDir = Directory.GetCurrentDirectory();
+            try
+            {
+                _logDir = new DirectoryInfo(logDir);
+                if (!_logDir.Exists)
+                {
+                    if (createIfNotExisting)
+                    {
+                        _logDir.Create();
+                    }
+                    else
+                    {
+                        throw new DirectoryNotFoundException(string.Format("Directory '{0}' does not exist!", _logDir.FullName));
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                return ex;
+            }
+            return null;
+        }
+
+        public static Exception Debug(string message, bool useBackgroundTask = true)
+        {
+            return Log(message);
+        }
+
+        public static Exception Info(string message, bool useBackgroundTask = true)
+        {
+            return Log(message, Severity.Info);
+        }
+
+        public static Exception Warn(string message, bool useBackgroundTask = true)
+        {
+            return Log(message, Severity.Warn);
+        }
+
+        public static Exception Error(string message, bool useBackgroundTask = true)
+        {
+            return Log(message, Severity.Error);
+        }
+
+        public static Exception Log(Exception ex, bool useBackgroundTask = true, int framesToSkip = 0)
+        {
+            return ex == null ? null : Log(GetExceptionXElement(ex), Severity.Exception, useBackgroundTask, framesToSkip);
+        }
+
+        public static string GetExceptionAsXmlString(Exception ex)
+        {
+            XElement xElement = GetExceptionXElement(ex);
+            return xElement == null ? string.Empty : xElement.ToString();
+        }
+
+        public static XElement GetExceptionXElement(Exception ex)
+        {
+            if (ex == null)
+            {
+                return null;
+            }
+
+            var xElement = new XElement(CONST_EXCEPTION, ex.Message);
+            //var xElement = new XElement(CONST_EXCEPTION);
+
+            xElement.Add(new XAttribute("Type", ex.GetType().FullName));
+
+            if (ex.Source != null)
+            {
+                xElement.Add(new XAttribute("Source", ex.TargetSite == null || ex.TargetSite.DeclaringType == null ? ex.Source : string.Format("{0}.{1}", ex.TargetSite.DeclaringType.FullName, ex.TargetSite.Name)));
+            }
+
+            //xElement.Add(new XElement("Message", ex.Message));
+
+            if (ex.Data.Count > 0)
+            {
+                var xDataElement = new XElement("Data");
+                foreach (DictionaryEntry de in ex.Data)
+                {
+                    xDataElement.Add(new XElement("Entry", new XAttribute("Key", de.Key), new XAttribute("Value", de.Value ?? string.Empty)));
+                }
+                xElement.Add(xDataElement);
+            }
+
+            if (ex is SqlException)
+            {
+                var sqlEx = (SqlException)ex;
+                var xSqlElement = new XElement("SqlException");
+                xSqlElement.Add(new XAttribute("ErrorNumber", sqlEx.Number));
+                if (!string.IsNullOrEmpty(sqlEx.Server))
+                    xSqlElement.Add(new XAttribute("ServerName", sqlEx.Server));
+                if (!string.IsNullOrEmpty(sqlEx.Procedure))
+                    xSqlElement.Add(new XAttribute("Procedure", sqlEx.Procedure));
+                xElement.Add(xSqlElement);
+            }
+
+            if (ex is COMException)
+            {
+                var comEx = (COMException)ex;
+                var xComElement = new XElement("ComException");
+                xComElement.Add(new XAttribute("ErrorCode", string.Format("0x{0:X8}", (uint)comEx.ErrorCode)));
+                xElement.Add(xComElement);
+            }
+
+            if (ex is AggregateException)
+            {
+                var xAggElement = new XElement("AggregateException");
+                foreach (Exception innerEx in ((AggregateException)ex).InnerExceptions)
+                {
+                    xAggElement.Add(GetExceptionXElement(innerEx));
+                }
+                xElement.Add(xAggElement);
+            }
+
+            if (ex.StackTrace != null)
+            {
+                xElement.Add(new XElement("StackTrace", ex.StackTrace));
+            }
+
+            if (ex.InnerException != null)
+            {
+                xElement.Add(GetExceptionXElement(ex.InnerException));
+            }
+
+            return xElement;
+        }
+
+        public static Exception Log(string message, Severity severity = Severity.Debug, bool useBackgroundTask = true, int framesToSkip = 0)
+        {
+            return string.IsNullOrEmpty(message) ? null : Log(new XElement("Message", message), severity, useBackgroundTask, framesToSkip);
+        }
+
+        public static Exception Log(XElement xElement, Severity severity = Severity.Debug, bool useBackgroundTask = true, int framesToSkip = 0)
+        {
+            if (xElement == null || severity < LogLevel)
+                return null;
+            try
+            {
+                var logEntry = new XElement("LogEntry");
+                logEntry.Add(new XAttribute("Date", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff")));
+                logEntry.Add(new XAttribute("Severity", String.Format("{0,-11}", String.Format("[{0}]", severity))));
+                logEntry.Add(new XAttribute("PcId", String.Format("[PcId:{0}(user={1})]", Environment.MachineName, Environment.UserName)));
+                logEntry.Add(new XAttribute("ProcessId", String.Format("[ProcessId:{0}]", Process.GetCurrentProcess().Id)));
+                //logEntry.Add(new XAttribute("ThreadId", Thread.CurrentThread.ManagedThreadId));
+                logEntry.Add(new XAttribute("Source", GetCaller(framesToSkip)));
+                logEntry.Add(new XAttribute("Split", "-"));
+                if (CONST_EXCEPTION.Equals(xElement.Name.LocalName, StringComparison.CurrentCultureIgnoreCase))
+                {
+                    logEntry.Add(new XAttribute("Message", ((System.Xml.Linq.XText)(xElement.FirstNode)).Value));
+                    logEntry.Add(new XAttribute("MessageInfo", String.Format("[{0}]", CONST_COMENT_EXCEPTION_VALUE)));
+                    logEntry.Add(xElement);
+                }
+                else
+                {
+                    logEntry.Add(xElement);
+                }
+
+                if (useBackgroundTask)
+                {
+                    Enqueue(logEntry);
+                }
+                else
+                {
+                    return WriteLogEntryToFile(logEntry);
+                }
+            }
+            catch (Exception ex)
+            {
+                return ex;
+            }
+            return null;
+        }
+
+        public static string GetFileName(DateTime dateTime)
+        {
+            return string.Format("{0}\\{1}{2}{3}.{4}", LogDir, Prefix, dateTime.ToString(DateFormat), Suffix, Extension);
+        }
+
+        public static bool LogFileExists(DateTime dateTime)
+        {
+            return File.Exists(GetFileName(dateTime));
+        }
+
+        public static XDocument GetLogFileAsXml()
+        {
+            return GetLogFileAsXml(DateTime.Now);
+        }
+
+        public static XDocument GetLogFileAsXml(DateTime dateTime)
+        {
+            string fileName = GetFileName(dateTime);
+            if (!File.Exists(fileName))
+                return null;
+            Flush();
+            var sb = new StringBuilder();
+            sb.AppendLine("<?xml version=\"1.0\" encoding=\"utf-8\"?>");
+            sb.AppendLine("<LogEntries>");
+            sb.AppendLine(File.ReadAllText(fileName));
+            sb.AppendLine("</LogEntries>");
+            return XDocument.Parse(sb.ToString());
+        }
+
+        public static string GetLogFileAsText()
+        {
+            return GetLogFileAsText(DateTime.Now);
+        }
+
+        public static string GetLogFileAsText(DateTime dateTime)
+        {
+            string fileName = GetFileName(dateTime);
+            if (!File.Exists(fileName))
+                return null;
+            Flush();
+            return File.ReadAllText(fileName);
+        }
+
+        public static void ShowLogFile()
+        {
+            ShowLogFile(DateTime.Now);
+        }
+
+        public static void ShowLogFile(DateTime dateTime)
+        {
+            string fileName;
+            if (WriteText)
+            {
+                Flush();
+                fileName = GetFileName(dateTime);
+            }
+            else
+            {
+                fileName = string.Format("{0}Log_{1}.xml", Path.GetTempPath(), DateTime.Now.ToString("yyyyMMddHHmmssffff"));
+                XDocument logFileXml = GetLogFileAsXml(dateTime);
+                if (logFileXml != null)
+                    logFileXml.Save(fileName);
+            }
+            if (!File.Exists(fileName))
+                return;
+            Process.Start(fileName);
+            Thread.Sleep(2000);
+        }
+
+        public static void StartLogging()
+        {
+            if (_backgroundTask != null || StopEnqueingNewEntries || StopLoggingRequested)
+                return;
+            StopEnqueingNewEntries = false;
+            StopLoggingRequested = false;
+            lock (_backgroundTaskSyncRoot)
+            {
+                if (_backgroundTask != null)
+                    return;
+                LastExceptionInBackgroundTask = null;
+                _backgroundTask = new Task(WriteLogEntriesToFile, TaskCreationOptions.LongRunning);
+                _backgroundTask.Start();
+            }
+        }
+
+        public static void StopLogging(bool flush = true)
+        {
+            StopEnqueingNewEntries = true;
+            if (_backgroundTask == null)
+                return;
+            if (flush)
+                Flush();
+            StopLoggingRequested = true;
+            lock (_backgroundTaskSyncRoot)
+            {
+                if (_backgroundTask == null)
+                    return;
+                _backgroundTask.Wait(1000);
+                _backgroundTask = null;
+            }
+        }
+
+        public static void Flush()
+        {
+            if (!LoggingStarted)
+                return;
+            while (NumberOfLogEntriesWaitingToBeWrittenToFile > 0)
+            {
+                int lastNumber = NumberOfLogEntriesWaitingToBeWrittenToFile;
+                Thread.Sleep(222);
+                if (lastNumber == NumberOfLogEntriesWaitingToBeWrittenToFile)
+                    break;
+            }
+        }
+
+        public static void ClearQueue()
+        {
+            lock (_logEntryQueue)
+            {
+                _logEntryQueue.Clear();
+            }
+        }
+
+        private static void Enqueue(XElement logEntry)
+        {
+            if (StopEnqueingNewEntries)
+                return;
+            if (!StartExplicitly)
+                StartLogging();
+            lock (_logEntryQueue)
+            {
+                if (_logEntryQueue.Count < 10000)
+                    _logEntryQueue.Enqueue(logEntry);
+            }
+        }
+
+        private static XElement Peek()
+        {
+            lock (_logEntryQueue)
+            {
+                return _logEntryQueue.Count == 0 ? null : _logEntryQueue.Peek();
+            }
+        }
+
+        private static void Dequeue()
+        {
+            lock (_logEntryQueue)
+            {
+                if (_logEntryQueue.Count > 0)
+                    _logEntryQueue.Dequeue();
+            }
+        }
+
+        private static void WriteLogEntriesToFile()
+        {
+            while (!StopLoggingRequested)
+            {
+                XElement xmlEntry = Peek();
+                if (xmlEntry == null)
+                {
+                    Thread.Sleep(100);
+                    continue;
+                }
+                for (int i = 0; i < 10; i++)
+                {
+                    Exception ex = WriteLogEntryToFile(xmlEntry);
+                    WriteOwnExceptionToEventLog(ex);
+                    LastExceptionInBackgroundTask = ex;
+                    if (LastExceptionInBackgroundTask == null || NumberOfLogEntriesWaitingToBeWrittenToFile > 1000)
+                        break;
+                    Thread.Sleep(100);
+                }
+                Dequeue();
+            }
+        }
+
+        private static void WriteOwnExceptionToEventLog(Exception ex)
+        {
+            if (ex == null || (LastExceptionInBackgroundTask != null && ex.Message == LastExceptionInBackgroundTask.Message))
+                return;
+            try
+            {
+                const string source = "LogUtility";
+                const string logName = "Application";
+                string message;
+                try
+                {
+                    XElement xElement = GetExceptionXElement(ex);
+                    message = xElement.ToString();
+                }
+                catch
+                {
+                    message = ex.Message;
+                }
+                if (!EventLog.SourceExists(source))
+                    EventLog.CreateEventSource(source, logName);
+                EventLog.WriteEntry(source, message, EventLogEntryType.Error, 0);
+            }
+            catch
+            {
+            }
+        }
+
+        private static Exception WriteLogEntryToFile(XElement xmlEntry)
+        {
+            if (xmlEntry == null)
+                return null;
+            const int secondsToWaitForFile = 5;
+            if (Monitor.TryEnter(_logFileSyncRoot, new TimeSpan(0, 0, 0, secondsToWaitForFile)))
+            {
+                try
+                {
+                    using (var fileStream = new FileStream(FileName, FileMode.Append, FileAccess.Write, FileShare.None))
+                    {
+                        using (var streamWriter = new StreamWriter(fileStream))
+                        {
+                            if (WriteText)
+                            {
+                                streamWriter.WriteLine(ConvertXmlToPlainText(xmlEntry));
+                            }
+                            else
+                            {
+                                streamWriter.WriteLine(xmlEntry);
+                            }
+                        }
+                    }
+                    return null;
+                }
+                catch (Exception ex)
+                {
+                    try
+                    {
+                        ex.Data["Filename"] = FileName;
+                    }
+                    catch
+                    {
+                    }
+                    try
+                    {
+                        WindowsIdentity user = WindowsIdentity.GetCurrent();
+                        ex.Data["Username"] = user == null ? "unknown" : user.Name;
+                    }
+                    catch
+                    {
+                    }
+                    return ex;
+                }
+                finally
+                {
+                    Monitor.Exit(_logFileSyncRoot);
+                }
+            }
+            try
+            {
+                return new Exception(string.Format("Could not write to file '{0}', because it was blocked by another thread for more than {1} seconds.", FileName, secondsToWaitForFile));
+            }
+            catch (Exception ex)
+            {
+                return ex;
+            }
+        }
+
+        private static string ConvertXmlToPlainText(XElement xmlEntry)
+        {
+            var sb = new StringBuilder();
+            foreach (var element in xmlEntry.DescendantsAndSelf())
+            {
+                if (element.HasAttributes)
+                {
+                    foreach (var attribute in element.Attributes())
+                    {
+                        if (sb.Length > 0)
+                            sb.Append(TextSeparator);
+                        //sb.Append(attribute.Name).Append(" = ").Append(attribute.Value);
+                        sb.Append(attribute.Value);
+                    }
+                }
+                else
+                {
+                    if (sb.Length > 0)
+                        sb.Append(TextSeparator);
+                    string value = element.Value.Replace("\r\n", " ");
+                    //sb.Append(element.Name).Append(" = ").Append(value);
+                    sb.Append(value);
+                }
+            }
+            return sb.ToString();
+        }
+
+        private static string GetCaller(int framesToSkip = 0)
+        {
+            string result = string.Empty;
+            int i = 1;
+            while (true)
+            {
+                var stackFrame = new StackFrame(i++);
+                MethodBase methodBase = stackFrame.GetMethod();
+                if (methodBase == null)
+                    break;
+                Type declaringType = methodBase.DeclaringType;
+                if (declaringType == null)
+                    break;
+                result = string.Format("{0}.{1}", declaringType.FullName, methodBase.Name);
+                if (declaringType != typeof(LogUtility) && --framesToSkip < 0)
+                    break;
+            }
+            return result;
+        }
+    }
+
+
+２．定義ファイルを新規作成する
+
+<?xml version="1.0" encoding="utf-8" ?>
+<configuration>
+ <appSettings>
+  <add key="LOG_FILE_PATH" value="Logs" />
+  <add key="LOG_LEVEL" value="Debug" />
+ </appSettings>
+</configuration>
